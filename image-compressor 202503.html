@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>画像圧縮ツール</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exif-js/2.3.0/exif.min.js"></script>
+    <!-- JSZipはダウンロード処理時に必要に応じて動的に読み込みます -->
+    <style>
+        .drop-zone.dragover {
+            border-color: #3B82F6;
+        }
+        @media (max-width: 640px) {
+            .grid-cols-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+        /* 入力要素のスタイル調整 */
+        input[type="number"] {
+            -moz-appearance: textfield;
+        }
+        input[type="number"]::-webkit-outer-spin-button,
+        input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        /* モバイルでのタップ時のハイライトを無効化 */
+        button, input {
+            -webkit-tap-highlight-color: transparent;
+        }
+        /* プログレスバーのスタイル */
+        .progress-bar {
+            height: 8px;
+            background-color: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-bar-inner {
+            height: 100%;
+            background-color: #3B82F6;
+            transition: width 0.2s ease;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="max-w-2xl mx-auto p-4">
+        <div class="bg-white rounded-lg shadow-md mb-4 p-6">
+            <h3 class="text-lg font-semibold mb-4">圧縮設定</h3>
+            <div class="grid grid-cols-2 gap-4 mb-6">
+                <div>
+                    <label for="quality" class="block text-sm font-medium text-gray-700">品質 (1-100)</label>
+                    <input type="number" 
+                           id="quality" 
+                           min="1" 
+                           max="100" 
+                           value="75" 
+                           class="mt-1 block w-full rounded-md border p-2">
+                </div>
+                <div>
+                    <label for="maxWidth" class="block text-sm font-medium text-gray-700">最大幅 (px)</label>
+                    <input type="number" 
+                           id="maxWidth" 
+                           min="1" 
+                           value="1920" 
+                           class="mt-1 block w-full rounded-md border p-2">
+                </div>
+            </div>
+            
+            <div class="space-y-4">
+                <h4 class="font-medium">Exif設定</h4>
+                <div class="flex items-center space-x-2">
+                    <input type="checkbox" id="removeLocation" class="rounded border-gray-300" checked>
+                    <label for="removeLocation" class="text-sm text-gray-700">位置情報を削除</label>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <input type="checkbox" id="removeExif" class="rounded border-gray-300">
+                    <label for="removeExif" class="text-sm text-gray-700">その他のExif情報を削除</label>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <input type="checkbox" id="keepOrientation" class="rounded border-gray-300" checked>
+                    <label for="keepOrientation" class="text-sm text-gray-700">画像の向きを保持</label>
+                </div>
+            </div>
+        </div>
+
+        <div id="dropZone" 
+             class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center mb-4 hover:border-blue-500 transition-colors">
+            <input type="file" 
+                   id="fileInput" 
+                   accept="image/jpeg,image/png,image/gif,image/webp,.jpg,.jpeg,.png,.gif,.webp" 
+                   multiple 
+                   class="hidden">
+            <p class="mb-4">
+                写真ライブラリから選択<br>
+                （PCの場合はドラッグ&ドロップも可能）
+            </p>
+            <div class="text-sm text-gray-500 mb-4">
+                対応フォーマット: JPEG, PNG, GIF, WebP
+            </div>
+            <button type="button"
+                    onclick="document.getElementById('fileInput').click()" 
+                    class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                写真を選択
+            </button>
+        </div>
+
+        <!-- ボタン部分をワークフローに合わせて改善 -->
+        <div class="flex flex-wrap gap-4 mb-4">
+            <button type="button"
+                    id="convertBtn" 
+                    disabled
+                    class="flex-1 px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                変換開始
+            </button>
+            <button type="button"
+                    id="clearBtn" 
+                    disabled
+                    class="flex-1 px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                結果をクリア
+            </button>
+        </div>
+        
+        <!-- ダウンロードボタン（変換後に表示） -->
+        <div id="downloadButtonContainer" class="mb-4 hidden">
+            <button type="button"
+                    id="downloadBtn" 
+                    class="w-full px-4 py-3 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+                <span id="downloadBtnText">全ての画像をダウンロード</span>
+            </button>
+        </div>
+
+        <div id="progress" class="mb-4 hidden">
+            <p id="progress-text" class="text-center mb-2"></p>
+            <div class="progress-bar">
+                <div id="progress-bar-inner" class="progress-bar-inner" style="width: 0%"></div>
+            </div>
+        </div>
+        
+        <div id="result" class="grid grid-cols-2 gap-4"></div>
+    </div>
+
+    <script>
+        const SUPPORTED_TYPES = [
+            'image/jpeg',
+            'image/png',
+            'image/gif',
+            'image/webp'
+        ];
+
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        let files = [];
+        let processedFiles = [];
+        let processing = false;
+        const canvas = document.createElement('canvas');
+        
+        // ワーカーの数を制限（並列処理のスレッド数）
+        const MAX_CONCURRENT_WORKERS = 3;
+        let activeWorkers = 0;
+
+        // 初期化時にボタンテキストを更新
+        document.addEventListener('DOMContentLoaded', () => {
+            const downloadBtnText = document.getElementById('downloadBtnText');
+            downloadBtnText.textContent = isMobile ? '全ての画像を保存/共有' : '全ての画像をダウンロード';
+        });
+
+        function isSupported(file) {
+            return SUPPORTED_TYPES.includes(file.type);
+        }
+
+        // ファイルダウンロード/共有処理
+        async function shareFile(file) {
+            try {
+                const shareData = {
+                    files: [file],
+                };
+                
+                if (navigator.share && navigator.canShare(shareData)) {
+                    await navigator.share(shareData);
+                    return true;
+                } else {
+                    // 共有APIが使えない場合は通常のダウンロード
+                    downloadFile(file);
+                    return true;
+                }
+            } catch (err) {
+                console.error('共有に失敗しました:', err);
+                alert('画像の共有に失敗しました。別の方法で保存してください。');
+                return false;
+            }
+        }
+
+        function downloadFile(file) {
+            const url = URL.createObjectURL(file);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `compressed_${file.name}`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // EXIFの向き情報を取得
+        function getOrientation(file) {
+            return new Promise((resolve) => {
+                if (!file || file.type !== 'image/jpeg') {
+                    resolve(1); // JPEGでない場合はデフォルト値
+                    return;
+                }
+
+                EXIF.getData(file, function() {
+                    const orientation = EXIF.getTag(this, "Orientation") || 1;
+                    resolve(orientation);
+                });
+            });
+        }
+
+        // 画像の向きを修正（修正版）
+        function fixOrientation(ctx, orientation) {
+            try {
+                switch (orientation) {
+                    case 2:
+                        // 水平方向に反転
+                        ctx.scale(-1, 1);
+                        break;
+                    case 3:
+                        // 180度回転
+                        ctx.rotate(Math.PI);
+                        break;
+                    case 4:
+                        // 垂直方向に反転
+                        ctx.scale(1, -1);
+                        break;
+                    case 5:
+                        // 水平方向に反転して90度回転
+                        ctx.rotate(0.5 * Math.PI);
+                        ctx.scale(1, -1);
+                        break;
+                    case 6:
+                        // 90度回転（時計回り）
+                        ctx.rotate(0.5 * Math.PI);
+                        break;
+                    case 7:
+                        // 水平方向に反転して270度回転
+                        ctx.rotate(1.5 * Math.PI);
+                        ctx.scale(1, -1);
+                        break;
+                    case 8:
+                        // 270度回転（反時計回り）
+                        ctx.rotate(1.5 * Math.PI);
+                        break;
+                    default:
+                        // デフォルト（何もしない）
+                        break;
+                }
+            } catch (error) {
+                console.error('画像回転処理エラー:', error);
+                // エラーが発生しても処理を継続するため、例外をスローせず、ログだけ出力
+            }
+        }
+
+        // 画像圧縮処理 - バグ修正版
+        async function compressImage(file) {
+            try {
+                console.log(`処理開始: ${file.name} (${file.type})`);
+                
+                // ファイルを読み込む
+                let dataUrl;
+                try {
+                    dataUrl = await readFileAsDataURL(file);
+                } catch (error) {
+                    console.error('ファイル読み込みエラー:', error);
+                    throw new Error(`ファイル読み込みに失敗しました: ${file.name}`);
+                }
+                
+                // 設定値を取得
+                const quality = Math.max(0.1, Math.min(1.0, document.getElementById('quality').value / 100));
+                const maxWidth = Math.max(10, parseInt(document.getElementById('maxWidth').value) || 1920);
+                const keepOrientation = document.getElementById('keepOrientation').checked;
+                const removeExif = document.getElementById('removeExif').checked || document.getElementById('removeLocation').checked;
+                
+                console.log(`設定: 品質=${quality}, 最大幅=${maxWidth}, 向き保持=${keepOrientation}, EXIF削除=${removeExif}`);
+                
+                // 画像を読み込む
+                let img;
+                try {
+                    img = await loadImage(dataUrl);
+                } catch (error) {
+                    console.error('画像読み込みエラー:', error);
+                    throw new Error(`画像の読み込みに失敗しました: ${file.name}`);
+                }
+                
+                // 画像のサイズを計算
+                let newWidth = img.naturalWidth || img.width;
+                let newHeight = img.naturalHeight || img.height;
+                
+                if (newWidth > maxWidth) {
+                    const ratio = maxWidth / newWidth;
+                    newWidth = maxWidth;
+                    newHeight = Math.round(newHeight * ratio);
+                }
+                
+                console.log(`元のサイズ: ${img.width}x${img.height}, 新サイズ: ${newWidth}x${newHeight}`);
+                
+                // 向き情報の取得
+                let orientation = 1;
+                try {
+                    if (keepOrientation && file.type === 'image/jpeg') {
+                        orientation = await getOrientation(file);
+                        console.log(`検出された向き: ${orientation}`);
+                    }
+                } catch (error) {
+                    console.warn('向き情報取得エラー:', error);
+                    orientation = 1;  // エラー時はデフォルト値を使用
+                }
+                
+                // 新しいキャンバスを作成（メモリリークを防ぐため）
+                const tempCanvas = document.createElement('canvas');
+                
+                try {
+                    // 向きに応じたキャンバスサイズの設定
+                    let canvasWidth = newWidth;
+                    let canvasHeight = newHeight;
+                    
+                    if (orientation > 4 && orientation < 9) {
+                        // 縦向きの場合は幅と高さを入れ替え
+                        tempCanvas.width = newHeight;
+                        tempCanvas.height = newWidth;
+                    } else {
+                        tempCanvas.width = newWidth;
+                        tempCanvas.height = newHeight;
+                    }
+                    
+                    const ctx = tempCanvas.getContext('2d');
+                    if (!ctx) {
+                        throw new Error('キャンバスコンテキストの取得に失敗しました');
+                    }
+                    
+                    // キャンバスをクリア
+                    ctx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+                    
+                    // 向き情報に基づいて描画を調整
+                    ctx.save();
+                    
+                    if (keepOrientation && orientation !== 1) {
+                        // 原点を中心に移動
+                        if (orientation > 4 && orientation < 9) {
+                            ctx.translate(tempCanvas.width / 2, tempCanvas.height / 2);
+                        } else {
+                            ctx.translate(tempCanvas.width / 2, tempCanvas.height / 2);
+                        }
+                        
+                        // 画像の向きに応じて回転/反転
+                        fixOrientation(ctx, orientation);
+                        
+                        // 原点を戻す
+                        if (orientation > 4 && orientation < 9) {
+                            ctx.translate(-tempCanvas.height / 2, -tempCanvas.width / 2);
+                        } else {
+                            ctx.translate(-tempCanvas.width / 2, -tempCanvas.height / 2);
+                        }
+                    }
+                    
+                    // 画像を描画
+                    try {
+                        if (orientation > 4 && orientation < 9) {
+                            // 縦向きの場合は、描画位置を調整
+                            const offsetX = (tempCanvas.width - newHeight) / 2;
+                            const offsetY = (tempCanvas.height - newWidth) / 2;
+                            ctx.drawImage(img, offsetY, offsetX, newWidth, newHeight);
+                        } else {
+                            // 通常の向き
+                            const offsetX = (tempCanvas.width - newWidth) / 2;
+                            const offsetY = (tempCanvas.height - newHeight) / 2;
+                            ctx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
+                        }
+                    } catch (drawError) {
+                        console.error('描画エラー:', drawError);
+                        // 描画に失敗した場合は、単純な描画を試みる
+                        ctx.restore();
+                        ctx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+                        ctx.drawImage(img, 0, 0, tempCanvas.width, tempCanvas.height);
+                    }
+                    
+                    ctx.restore();
+                    
+                    // 画像をBlobに変換
+                    const blob = await new Promise((resolve, reject) => {
+                        try {
+                            tempCanvas.toBlob(
+                                (blob) => {
+                                    if (blob) {
+                                        resolve(blob);
+                                    } else {
+                                        reject(new Error('BLOBの生成に失敗しました'));
+                                    }
+                                },
+                                'image/jpeg',
+                                quality
+                            );
+                        } catch (blobError) {
+                            reject(blobError);
+                        }
+                    });
+                    
+                    // 画像のファイル名を生成（元の拡張子を.jpgに変更）
+                    const originalName = file.name;
+                    const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+                    const newFileName = `${baseName}.jpg`;
+                    
+                    console.log(`処理完了: ${file.name}`);
+                    
+                    return new File([blob], newFileName, {
+                        type: 'image/jpeg',
+                        lastModified: Date.now()
+                    });
+                } catch (canvasError) {
+                    console.error('キャンバス処理エラー:', canvasError);
+                    throw new Error(`画像の処理中にエラーが発生しました: ${canvasError.message}`);
+                }
+            } catch (error) {
+                console.error(`画像圧縮エラー (${file.name}):`, error);
+                throw error;
+            }
+        }
+        
+        // ユーティリティ関数：ファイルをDataURLとして読み込む
+        function readFileAsDataURL(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = (e) => reject(new Error('ファイル読み込みエラー'));
+                reader.readAsDataURL(file);
+            });
+        }
+        
+        // ユーティリティ関数：画像を読み込む
+        function loadImage(src) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error('画像読み込みエラー'));
+                img.src = src;
+            });
+        }
+
+        // 並列処理でファイルを圧縮
+        async function processFilesConcurrently() {
+            if (files.length === 0) return;
+            
+            processing = true;
+            const progress = document.getElementById('progress');
+            progress.classList.remove('hidden');
+            const progressText = document.getElementById('progress-text');
+            const progressBar = document.getElementById('progress-bar-inner');
+            
+            const convertBtn = document.getElementById('convertBtn');
+            const downloadButtonContainer = document.getElementById('downloadButtonContainer');
+            const clearBtn = document.getElementById('clearBtn');
+            
+            convertBtn.disabled = true;
+            clearBtn.disabled = true;
+            
+            // ファイル処理用の変数
+            const fileQueue = [...files];
+            const results = [];
+            let completed = 0;
+            let errors = 0;
+            
+            try {
+                console.log(`処理開始: ${files.length}個のファイル`);
+                
+                // ワーカー数を制限（ブラウザパフォーマンスのため）
+                const workerCount = Math.min(MAX_CONCURRENT_WORKERS, files.length, 3);
+                console.log(`並列ワーカー数: ${workerCount}`);
+                
+                // 進捗表示を初期化
+                progressText.textContent = `処理準備中... [0/${files.length}]`;
+                progressBar.style.width = '0%';
+                
+                // キュー内の次のファイルを処理する関数
+                async function processNextFile() {
+                    while (fileQueue.length > 0) {
+                        const file = fileQueue.shift();
+                        if (!file) continue;
+                        
+                        try {
+                            // ファイルタイプを確認
+                            if (!SUPPORTED_TYPES.includes(file.type)) {
+                                console.warn(`サポートされていないファイル形式: ${file.type} - ${file.name}`);
+                                errors++;
+                                continue;
+                            }
+                            
+                            // ファイルサイズが大きすぎないか確認
+                            if (file.size > 50 * 1024 * 1024) { // 50MB以上の場合は警告
+                                console.warn(`大きすぎるファイル: ${file.name} (${(file.size/1024/1024).toFixed(1)}MB)`);
+                            }
+                            
+                            // 画像を圧縮
+                            const compressedFile = await compressImage(file);
+                            
+                            // 結果をリストに追加
+                            results.push({
+                                original: file,
+                                compressed: compressedFile,
+                                previewUrl: URL.createObjectURL(compressedFile)
+                            });
+                        } catch (error) {
+                            console.error(`ファイル処理エラー (${file.name}):`, error);
+                            errors++;
+                        } finally {
+                            // 完了数とプログレスを更新
+                            completed++;
+                            const percent = Math.round((completed / files.length) * 100);
+                            progressText.textContent = `処理中: [${completed}/${files.length}]`;
+                            progressBar.style.width = `${percent}%`;
+                        }
+                    }
+                }
+                
+                // 同時に処理するワーカーの数だけ並列処理を開始
+                const workers = Array(workerCount)
+                    .fill()
+                    .map(() => processNextFile());
+                
+                await Promise.all(workers);
+                
+                // 処理結果を保存
+                processedFiles = results;
+                
+                // 進捗表示を更新
+                if (errors > 0) {
+                    progressText.textContent = `処理完了 (${errors}個のエラー)`;
+                } else {
+                    progressText.textContent = '処理完了';
+                }
+                progressBar.style.width = '100%';
+                
+                // UIを更新
+                updatePreview();
+                
+                console.log(`処理完了: 成功=${results.length}, エラー=${errors}`);
+                
+                // 全ての画像処理に失敗した場合
+                if (errors > 0 && results.length === 0) {
+                    alert(`すべての画像の処理に失敗しました。サポートされている画像形式か確認してください。`);
+                } 
+                // 一部のファイルが失敗した場合
+                else if (errors > 0) {
+                    alert(`${errors}個のファイルの処理に失敗しました。処理に成功した画像のみ表示します。`);
+                }
+                // 処理が成功した場合、ダウンロード領域までスクロール
+                else if (results.length > 0) {
+                    setTimeout(() => {
+                        const downloadButtonContainer = document.getElementById('downloadButtonContainer');
+                        downloadButtonContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }, 500);
+                }
+                
+            } catch (error) {
+                console.error('ファイル処理エラー:', error);
+                alert('画像の処理中にエラーが発生しました: ' + error.message);
+            } finally {
+                processing = false;
+                // 処理が終わっても少しの間プログレスバーを表示
+                setTimeout(() => {
+                    if (!processing) {
+                        progress.classList.add('hidden');
+                    }
+                }, 1500);
+                
+                clearBtn.disabled = (processedFiles.length === 0 && files.length === 0);
+                // ダウンロードボタンの表示/非表示
+                downloadButtonContainer.classList.toggle('hidden', processedFiles.length === 0);
+                convertBtn.disabled = files.length === 0 || processedFiles.length > 0 || processing;
+            }
+        }
+
+        // プレビューの更新処理
+        function updatePreview() {
+            const result = document.getElementById('result');
+            result.innerHTML = '';
+            
+            const downloadButtonContainer = document.getElementById('downloadButtonContainer');
+            
+            // 処理後の画像がある場合は表示
+            if (processedFiles.length > 0) {
+                // プレビューを表示
+                processedFiles.forEach((file, index) => {
+                    createPreviewCard(file, index, true);
+                });
+                
+                // ダウンロードボタンを表示
+                downloadButtonContainer.classList.remove('hidden');
+            } 
+            // 未処理の画像がある場合は表示
+            else if (files.length > 0) {
+                files.forEach((file, index) => {
+                    createPreviewCard(file, index, false);
+                });
+                
+                // ダウンロードボタンを非表示
+                downloadButtonContainer.classList.add('hidden');
+            }
+            else {
+                // ファイルがない場合
+                downloadButtonContainer.classList.add('hidden');
+            }
+            
+            // ボタンの状態を更新
+            const convertBtn = document.getElementById('convertBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            
+            convertBtn.disabled = files.length === 0 || processing || processedFiles.length > 0;
+            clearBtn.disabled = (files.length === 0 && processedFiles.length === 0) || processing;
+        }
+        
+        // プレビューカードを作成する関数
+        function createPreviewCard(file, index, isProcessed) {
+            const result = document.getElementById('result');
+            
+            const card = document.createElement('div');
+            card.className = 'bg-white rounded-lg shadow-md p-4';
+            
+            // プレビュー画像の作成
+            const img = document.createElement('img');
+            if (isProcessed) {
+                img.src = file.previewUrl;
+            } else {
+                img.src = URL.createObjectURL(file);
+                // 未処理のプレビューはページを離れる時に解放
+                window.addEventListener('beforeunload', () => URL.revokeObjectURL(img.src), { once: true });
+            }
+            img.className = 'w-full h-40 object-cover rounded';
+            img.alt = `Preview ${index + 1}`;
+            img.loading = 'lazy'; // 遅延読み込み
+            
+            // ファイル情報の表示
+            const info = document.createElement('div');
+            info.className = 'mt-2 text-sm text-gray-600';
+            
+            const name = document.createElement('p');
+            name.className = 'truncate';
+            name.textContent = isProcessed ? file.original.name : file.name;
+            
+            info.appendChild(name);
+            
+            // 処理後のファイルの場合、圧縮情報を表示
+            if (isProcessed) {
+                const originalSize = file.original.size;
+                const compressedSize = file.compressed.size;
+                const reductionRate = ((1 - compressedSize / originalSize) * 100).toFixed(1);
+                
+                const stats = document.createElement('p');
+                stats.className = 'text-xs';
+                stats.innerHTML = `
+                    Original: ${formatFileSize(originalSize)}<br>
+                    Compressed: ${formatFileSize(compressedSize)}<br>
+                    縮小率: ${reductionRate}%
+                `;
+                info.appendChild(stats);
+
+                // 個別ダウンロードボタン
+                const buttonContainer = document.createElement('div');
+                buttonContainer.className = 'mt-2';
+
+                const actionBtn = document.createElement('button');
+                actionBtn.type = 'button';
+                actionBtn.className = 'w-full px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700';
+                actionBtn.textContent = isMobile ? '保存/共有' : 'ダウンロード';
+                actionBtn.onclick = () => {
+                    if (isMobile) {
+                        shareFile(file.compressed);
+                    } else {
+                        downloadFile(file.compressed);
+                    }
+                };
+                buttonContainer.appendChild(actionBtn);
+                info.appendChild(buttonContainer);
+            } else {
+                // 未処理ファイルのサイズ表示
+                const size = document.createElement('p');
+                size.className = 'text-xs';
+                size.textContent = `サイズ: ${formatFileSize(file.size)}`;
+                info.appendChild(size);
+            }
+            
+            card.appendChild(img);
+            card.appendChild(info);
+            result.appendChild(card);
+        }
+        
+        // ファイルサイズを読みやすい形式に変換
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        // 全ての画像をダウンロード/共有
+        async function downloadAll() {
+            if (processedFiles.length === 0) {
+                alert('先に変換を行ってください。');
+                return;
+            }
+            
+            const totalFiles = processedFiles.length;
+            const downloadBtn = document.getElementById('downloadBtn');
+            const downloadBtnText = document.getElementById('downloadBtnText');
+            const originalBtnText = downloadBtnText.textContent;
+            
+            if (isMobile) {
+                // モバイルの場合は1つずつ共有
+                for (let i = 0; i < processedFiles.length; i++) {
+                    const file = processedFiles[i];
+                    downloadBtnText.textContent = `共有中 (${i+1}/${totalFiles})`;
+                    const success = await shareFile(file.compressed);
+                    if (!success) break;
+                }
+                downloadBtnText.textContent = originalBtnText;
+            } else {
+                // PCの場合はダウンロード
+                // 多数の画像をダウンロードする場合はZIPファイルを作成
+                if (totalFiles > 10) {
+                    downloadBtnText.textContent = 'ZIP作成中...';
+                    downloadBtn.disabled = true;
+                    
+                    try {
+                        // 動的にJSZipライブラリを読み込む
+                        if (typeof JSZip === 'undefined') {
+                            await new Promise((resolve, reject) => {
+                                const script = document.createElement('script');
+                                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                                script.onload = resolve;
+                                script.onerror = reject;
+                                document.head.appendChild(script);
+                            });
+                        }
+                        
+                        // ZIPファイルを作成
+                        const zip = new JSZip();
+                        
+                        // プログレスバーを表示
+                        const progress = document.getElementById('progress');
+                        const progressText = document.getElementById('progress-text');
+                        const progressBar = document.getElementById('progress-bar-inner');
+                        progress.classList.remove('hidden');
+                        
+                        // ファイルをZIPに追加
+                        for (let i = 0; i < processedFiles.length; i++) {
+                            const file = processedFiles[i];
+                            progressText.textContent = `ZIP作成中 (${i+1}/${totalFiles})`;
+                            progressBar.style.width = `${Math.round((i+1) / totalFiles * 100)}%`;
+                            
+                            // ファイルの内容を読み込む
+                            const arrayBuffer = await file.compressed.arrayBuffer();
+                            zip.file(`compressed_${file.compressed.name}`, arrayBuffer);
+                            
+                            // 処理を分散させるため少し待機
+                            await new Promise(resolve => setTimeout(resolve, 10));
+                        }
+                        
+                        // ZIPファイルを生成
+                        progressText.textContent = 'ZIPファイル生成中...';
+                        const zipBlob = await zip.generateAsync({ type: 'blob' }, (metadata) => {
+                            progressBar.style.width = `${metadata.percent}%`;
+                        });
+                        
+                        // ZIPファイルをダウンロード
+                        const zipFile = new File([zipBlob], 'compressed_images.zip', { type: 'application/zip' });
+                        downloadFile(zipFile);
+                        
+                        progressText.textContent = 'ダウンロード完了';
+                        setTimeout(() => {
+                            progress.classList.add('hidden');
+                        }, 1000);
+                    } catch (error) {
+                        console.error('ZIP作成エラー:', error);
+                        alert('ZIPファイルの作成に失敗しました。別の方法で保存してください。');
+                        
+                        // エラーが発生した場合は個別ダウンロードに切り替え
+                        for (let i = 0; i < processedFiles.length; i++) {
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                            downloadFile(processedFiles[i].compressed);
+                        }
+                    } finally {
+                        downloadBtnText.textContent = originalBtnText;
+                        downloadBtn.disabled = false;
+                    }
+                } else {
+                    // 少数の画像は個別にダウンロード
+                    for (let i = 0; i < processedFiles.length; i++) {
+                        downloadBtnText.textContent = `ダウンロード中 (${i+1}/${totalFiles})`;
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        downloadFile(processedFiles[i].compressed);
+                    }
+                    downloadBtnText.textContent = originalBtnText;
+                }
+            }
+        }
+
+        // 結果をクリア
+        function clearResults() {
+            // すべてのURLオブジェクトを正しく解放
+            try {
+                // 処理済みファイルとアップロード済みファイルの両方からプレビューURLを解放
+                const filesToClean = [...processedFiles, ...files];
+                filesToClean.forEach(file => {
+                    if (file.previewUrl) {
+                        URL.revokeObjectURL(file.previewUrl);
+                    }
+                });
+                
+                // プレビュー画像を直接DOM要素から参照して解放
+                const previewImages = document.querySelectorAll('#result img');
+                previewImages.forEach(img => {
+                    if (img.src && img.src.startsWith('blob:')) {
+                        URL.revokeObjectURL(img.src);
+                    }
+                });
+                
+                // 結果表示領域をクリア
+                const resultContainer = document.getElementById('result');
+                resultContainer.innerHTML = '';
+                
+                // 配列をリセット
+                files = [];
+                processedFiles = [];
+                
+                // 進捗表示をリセット
+                const progress = document.getElementById('progress');
+                progress.classList.add('hidden');
+                const progressBar = document.getElementById('progress-bar-inner');
+                progressBar.style.width = '0%';
+                const progressText = document.getElementById('progress-text');
+                progressText.textContent = '';
+                
+                // ダウンロードボタンを非表示
+                const downloadButtonContainer = document.getElementById('downloadButtonContainer');
+                downloadButtonContainer.classList.add('hidden');
+                
+                // ファイル入力要素をリセット
+                const fileInput = document.getElementById('fileInput');
+                fileInput.value = '';
+                
+                // ボタン状態を更新
+                const convertBtn = document.getElementById('convertBtn');
+                convertBtn.disabled = true;
+                clearBtn.disabled = true;
+                
+                console.log('クリア処理完了');
+            } catch (error) {
+                console.error('クリア処理中にエラーが発生しました:', error);
+                alert('クリア処理中にエラーが発生しました。ページをリロードしてください。');
+            }
+        }
+
+        // 全ての要素の参照を取得
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const convertBtn = document.getElementById('convertBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        
+        // 初期状態ではクリアボタンを無効化
+        clearBtn.disabled = true;
+
+        // ドラッグ＆ドロップ
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.remove('dragover');
+            
+            if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) {
+                console.warn('ドロップされたファイルが見つかりません');
+                return;
+            }
+            
+            // 処理中の場合は受付拒否
+            if (processing) {
+                alert('現在処理中です。完了後に再度試してください。');
+                return;
+            }
+            
+            // 処理済みのファイルがある場合はクリア
+            if (processedFiles.length > 0) {
+                if (confirm('新しいファイルを処理するために結果をクリアします。よろしいですか？')) {
+                    clearResults();
+                } else {
+                    return;
+                }
+            }
+            
+            const droppedFiles = Array.from(e.dataTransfer.files).filter(file => {
+                if (!isSupported(file)) {
+                    console.warn(`サポートされていないファイル形式: ${file.type} - ${file.name}`);
+                    return false;
+                }
+                return true;
+            });
+
+            if (droppedFiles.length === 0) {
+                alert('対応していないファイル形式が選択されました。\nJPEG, PNG, GIF, WebP形式の画像を選択してください。');
+                return;
+            }
+
+            console.log(`ドロップされたファイル: ${droppedFiles.length}個`);
+            files = droppedFiles;
+            updatePreview();
+        });
+
+        // ファイル選択
+        fileInput.addEventListener('change', (e) => {
+            // 処理中の場合は受付拒否
+            if (processing) {
+                alert('現在処理中です。完了後に再度試してください。');
+                e.target.value = '';
+                return;
+            }
+            
+            // 処理済みのファイルがある場合はクリア
+            if (processedFiles.length > 0) {
+                if (confirm('新しいファイルを処理するために結果をクリアします。よろしいですか？')) {
+                    clearResults();
+                } else {
+                    e.target.value = '';
+                    return;
+                }
+            }
+            
+            const selectedFiles = Array.from(e.target.files).filter(file => {
+                if (!isSupported(file)) {
+                    console.warn(`サポートされていないファイル形式: ${file.type} - ${file.name}`);
+                    return false;
+                }
+                return true;
+            });
+
+            if (selectedFiles.length === 0) {
+                alert('対応していないファイル形式が選択されました。\nJPEG, PNG, GIF, WebP形式の画像を選択してください。');
+                e.target.value = '';
+                return;
+            }
+
+            console.log(`選択されたファイル: ${selectedFiles.length}個`);
+            files = selectedFiles;
+            updatePreview();
+        });
+
+        // ボタンイベント
+        convertBtn.addEventListener('click', processFilesConcurrently);
+        downloadBtn.addEventListener('click', downloadAll);
+        clearBtn.addEventListener('click', clearResults);
+        
+        // パフォーマンス最適化（画像の遅延読み込み）
+        document.addEventListener('scroll', () => {
+            if (processing) return;
+            
+            const lazyImages = document.querySelectorAll('img[loading="lazy"]');
+            lazyImages.forEach(img => {
+                const rect = img.getBoundingClientRect();
+                if (rect.top <= window.innerHeight && rect.bottom >= 0) {
+                    img.loading = 'eager';
+                }
+            });
+        });
+    </script>
+</body>
+</html>
