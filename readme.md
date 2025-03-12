@@ -137,7 +137,7 @@ A. 現在はJPEG, PNG, GIF, WebPのみサポートです。他形式をドロッ
 
 ## 作者 (Author)
 
-- **Your Name**  
+- **Toru Ishii**  
   - GitHub: [@tiaroka](https://github.com/tiaroka)  
 
 

@@ -152,6 +152,8 @@
         ];
 
         const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        const isAndroid = /Android/.test(navigator.userAgent);
         let files = [];
         let processedFiles = [];
         let processing = false;
@@ -165,30 +167,248 @@
         document.addEventListener('DOMContentLoaded', () => {
             const downloadBtnText = document.getElementById('downloadBtnText');
             downloadBtnText.textContent = isMobile ? '全ての画像を保存/共有' : '全ての画像をダウンロード';
+            
+            // デバッグ情報
+            console.log(`デバイス情報: isMobile=${isMobile}, isIOS=${isIOS}, isAndroid=${isAndroid}, UserAgent=${navigator.userAgent}`);
+            console.log(`Web Share API: navigator.share=${typeof navigator.share !== 'undefined'}, navigator.canShare=${typeof navigator.canShare !== 'undefined'}`);
         });
 
         function isSupported(file) {
             return SUPPORTED_TYPES.includes(file.type);
         }
 
-        // ファイルダウンロード/共有処理
+        // ファイルダウンロード/共有処理 - Android/iOS対応強化版
         async function shareFile(file) {
             try {
-                const shareData = {
-                    files: [file],
-                };
+                console.log(`共有処理開始: ${file.name}, サイズ: ${formatFileSize(file.size)}, タイプ: ${file.type}`);
                 
-                if (navigator.share && navigator.canShare(shareData)) {
-                    await navigator.share(shareData);
-                    return true;
-                } else {
-                    // 共有APIが使えない場合は通常のダウンロード
-                    downloadFile(file);
-                    return true;
+                // iOS向けの特別な処理
+                if (isIOS) {
+                    console.log("iOS向け共有処理を実行");
+                    
+                    // Blobから直接URLを作成（iOS Safariでの表示用）
+                    const blobUrl = URL.createObjectURL(file);
+                    
+                    // 共有データを準備
+                    const shareData = {
+                        files: [file],
+                    };
+                    
+                    // 方法1: Web Share APIでファイル共有を試行
+                    if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+                        try {
+                            console.log("iOS Web Share APIでファイル共有を試行");
+                            await navigator.share(shareData);
+                            console.log("Web Share API共有成功");
+                            URL.revokeObjectURL(blobUrl); // 使用後にURLを解放
+                            return true;
+                        } catch (shareError) {
+                            console.error("iOS Web Share APIエラー:", shareError);
+                            // ユーザーがキャンセルした場合は特別なエラーメッセージを表示しない
+                            if (shareError.name === 'AbortError') {
+                                console.log("ユーザーが共有をキャンセルしました");
+                                URL.revokeObjectURL(blobUrl);
+                                return false;
+                            }
+                            // 失敗した場合は次の方法を試す
+                        }
+                    }
+                    
+                    // 方法2: データURLを作成して共有
+                    try {
+                        console.log("データURLを使用した共有を試行");
+                        const reader = new FileReader();
+                        const dataUrlPromise = new Promise((resolve, reject) => {
+                            reader.onload = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(file);
+                        });
+                        
+                        const dataUrl = await dataUrlPromise;
+                        
+                        if (navigator.share) {
+                            try {
+                                await navigator.share({
+                                    url: dataUrl
+                                });
+                                console.log("データURL共有成功");
+                                URL.revokeObjectURL(blobUrl);
+                                return true;
+                            } catch (dataUrlError) {
+                                console.error("データURL共有エラー:", dataUrlError);
+                                // ユーザーがキャンセルした場合は特別なエラーメッセージを表示しない
+                                if (dataUrlError.name === 'AbortError') {
+                                    console.log("ユーザーが共有をキャンセルしました");
+                                    URL.revokeObjectURL(blobUrl);
+                                    return false;
+                                }
+                                // 失敗した場合は次の方法を試す
+                            }
+                        }
+                    } catch (dataUrlError) {
+                        console.error("データURL生成エラー:", dataUrlError);
+                    }
+                    
+                    // 方法3: 新しいタブで画像を開く（ユーザーが長押しして保存できる）
+                    try {
+                        console.log("新しいタブで画像を開く方法を試行");
+                        const newTab = window.open(blobUrl, '_blank');
+                        if (newTab) {
+                            // 成功した場合の処理
+                            console.log("新しいタブで画像を開くことに成功しました");
+                            alert("画像が新しいタブで開かれました。画像を長押しして「画像を保存」を選択してください。");
+                            // タブが閉じられたときにURLを解放するためのイベントリスナーを追加
+                            setTimeout(() => {
+                                URL.revokeObjectURL(blobUrl);
+                            }, 30000); // 30秒後にURLを解放
+                            return true;
+                        } else {
+                            // 新しいタブを開けなかった場合は、エラーメッセージを表示せず、
+                            // 代わりに現在のタブで画像を開くリンクを提供
+                            console.log("新しいタブを開けませんでした - 代替手段を提供");
+                            
+                            // 現在のページに一時的なリンクを作成
+                            const container = document.createElement('div');
+                            container.style.position = 'fixed';
+                            container.style.top = '50%';
+                            container.style.left = '50%';
+                            container.style.transform = 'translate(-50%, -50%)';
+                            container.style.backgroundColor = 'white';
+                            container.style.padding = '20px';
+                            container.style.borderRadius = '8px';
+                            container.style.boxShadow = '0 4px 6px rgba(0, 0, 0, 0.1)';
+                            container.style.zIndex = '9999';
+                            container.style.maxWidth = '90%';
+                            container.style.textAlign = 'center';
+                            
+                            const message = document.createElement('p');
+                            message.textContent = '画像を保存するには、下のリンクをタップして画像を長押ししてください。';
+                            message.style.marginBottom = '15px';
+                            
+                            const link = document.createElement('a');
+                            link.href = blobUrl;
+                            link.textContent = '画像を開く';
+                            link.target = '_blank';
+                            link.style.display = 'inline-block';
+                            link.style.padding = '8px 16px';
+                            link.style.backgroundColor = '#3B82F6';
+                            link.style.color = 'white';
+                            link.style.borderRadius = '4px';
+                            link.style.textDecoration = 'none';
+                            
+                            const closeBtn = document.createElement('button');
+                            closeBtn.textContent = '閉じる';
+                            closeBtn.style.marginTop = '15px';
+                            closeBtn.style.padding = '8px 16px';
+                            closeBtn.style.backgroundColor = '#e5e7eb';
+                            closeBtn.style.border = 'none';
+                            closeBtn.style.borderRadius = '4px';
+                            closeBtn.style.cursor = 'pointer';
+                            closeBtn.onclick = () => {
+                                document.body.removeChild(container);
+                                URL.revokeObjectURL(blobUrl);
+                            };
+                            
+                            container.appendChild(message);
+                            container.appendChild(link);
+                            container.appendChild(document.createElement('br'));
+                            container.appendChild(closeBtn);
+                            
+                            document.body.appendChild(container);
+                            
+                            // 30秒後に自動的に閉じる
+                            setTimeout(() => {
+                                if (document.body.contains(container)) {
+                                    document.body.removeChild(container);
+                                }
+                                URL.revokeObjectURL(blobUrl);
+                            }, 30000);
+                            
+                            return true;
+                        }
+                    } catch (tabError) {
+                        console.error("タブオープンエラー:", tabError);
+                        URL.revokeObjectURL(blobUrl);
+                        // エラーメッセージを表示せず、静かに失敗
+                        return false;
+                    }
+                } 
+                // Android向けの特別な処理
+                else if (isAndroid) {
+                    console.log("Android向け共有処理を実行");
+                    
+                    // 共有データを準備
+                    const shareData = {
+                        files: [file],
+                    };
+                    
+                    // Web Share APIでファイル共有を試行
+                    if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+                        try {
+                            console.log("Android Web Share APIでファイル共有を試行");
+                            await navigator.share(shareData);
+                            console.log("Web Share API共有成功");
+                            return true;
+                        } catch (shareError) {
+                            console.error("Android Web Share APIエラー:", shareError);
+                            
+                            // ユーザーがキャンセルした場合は特別なエラーメッセージを表示しない
+                            if (shareError.name === 'AbortError') {
+                                console.log("ユーザーが共有をキャンセルしました");
+                                return false;
+                            }
+                            
+                            // Androidの場合はダウンロードを試みる
+                            try {
+                                console.log("通常のダウンロード方法を試行");
+                                downloadFile(file);
+                                return true;
+                            } catch (downloadError) {
+                                console.error("ダウンロードエラー:", downloadError);
+                                return false;
+                            }
+                        }
+                    } else {
+                        // 共有APIが使えない場合は通常のダウンロード
+                        try {
+                            console.log("通常のダウンロード方法を試行");
+                            downloadFile(file);
+                            return true;
+                        } catch (downloadError) {
+                            console.error("ダウンロードエラー:", downloadError);
+                            return false;
+                        }
+                    }
+                }
+                // その他のデバイス（PC等）での処理
+                else {
+                    const shareData = {
+                        files: [file],
+                    };
+                    
+                    if (navigator.share && navigator.canShare(shareData)) {
+                        try {
+                            await navigator.share(shareData);
+                            return true;
+                        } catch (shareError) {
+                            // ユーザーがキャンセルした場合は特別なエラーメッセージを表示しない
+                            if (shareError.name === 'AbortError') {
+                                console.log("ユーザーが共有をキャンセルしました");
+                                return false;
+                            }
+                            // その他のエラーの場合は通常のダウンロードを試みる
+                            downloadFile(file);
+                            return true;
+                        }
+                    } else {
+                        // 共有APIが使えない場合は通常のダウンロード
+                        downloadFile(file);
+                        return true;
+                    }
                 }
             } catch (err) {
                 console.error('共有に失敗しました:', err);
-                alert('画像の共有に失敗しました。別の方法で保存してください。');
+                // エラーメッセージを表示せず、静かに失敗
                 return false;
             }
         }
@@ -389,7 +609,8 @@
                     }
                     
                     ctx.restore();
-                    
+                
+
                     // 画像をBlobに変換
                     const blob = await new Promise((resolve, reject) => {
                         try {
@@ -583,6 +804,255 @@
             }
         }
 
+        // 全ての画像をダウンロード/共有
+        async function downloadAll() {
+            if (processedFiles.length === 0) {
+                alert('先に変換を行ってください。');
+                return;
+            }
+            
+            const totalFiles = processedFiles.length;
+            const downloadBtn = document.getElementById('downloadBtn');
+            const downloadBtnText = document.getElementById('downloadBtnText');
+            const originalBtnText = downloadBtnText.textContent;
+            
+            if (isMobile) {
+                // iOS端末で複数ファイルの場合は特別な処理
+                if (isIOS && totalFiles > 1) {
+                    try {
+                        downloadBtnText.textContent = 'ZIP作成中...';
+                        
+                        // 動的にJSZipライブラリを読み込む
+                        if (typeof JSZip === 'undefined') {
+                            await new Promise((resolve, reject) => {
+                                const script = document.createElement('script');
+                                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                                script.onload = resolve;
+                                script.onerror = reject;
+                                document.head.appendChild(script);
+                            });
+                        }
+                        
+                        // ZIPファイルを作成
+                        const zip = new JSZip();
+                        
+                        // プログレスバーを表示
+                        const progress = document.getElementById('progress');
+                        const progressText = document.getElementById('progress-text');
+                        const progressBar = document.getElementById('progress-bar-inner');
+                        progress.classList.remove('hidden');
+                        
+                        // ファイルをZIPに追加
+                        for (let i = 0; i < processedFiles.length; i++) {
+                            const file = processedFiles[i];
+                            progressText.textContent = `ZIP作成中 (${i+1}/${totalFiles})`;
+                            progressBar.style.width = `${Math.round((i+1) / totalFiles * 100)}%`;
+                            
+                            // ファイルの内容を読み込む
+                            const arrayBuffer = await file.compressed.arrayBuffer();
+                            zip.file(`compressed_${file.compressed.name}`, arrayBuffer);
+                            
+                            // 処理を分散させるため少し待機
+                            await new Promise(resolve => setTimeout(resolve, 10));
+                        }
+                        
+                        // ZIPファイルを生成
+                        progressText.textContent = 'ZIPファイル生成中...';
+                        const zipBlob = await zip.generateAsync({ type: 'blob' }, (metadata) => {
+                            progressBar.style.width = `${metadata.percent}%`;
+                        });
+                        
+                        // ZIPファイルを共有
+                        const zipFile = new File([zipBlob], 'compressed_images.zip', { type: 'application/zip' });
+                        
+                        // iOS向けZIPファイル共有
+                        progressText.textContent = 'ファイル共有中...';
+                        const success = await shareFile(zipFile);
+                        
+                        if (success) {
+                            progressText.textContent = '共有完了';
+                            alert('複数の画像をZIPファイルとして共有しました。');
+                        } else {
+                            progressText.textContent = '共有失敗';
+                            alert('ZIPファイルの共有に失敗しました。各画像を個別に共有します。');
+                            await shareFilesOneByOne();
+                        }
+                        
+                        setTimeout(() => {
+                            progress.classList.add('hidden');
+                        }, 1000);
+                        
+                    } catch (error) {
+                        console.error('iOS ZIP作成エラー:', error);
+                        alert('複数画像の一括共有に失敗しました。各画像を個別に共有します。');
+                        // エラーが発生した場合は1つずつ共有
+                        await shareFilesOneByOne();
+                    } finally {
+                        downloadBtnText.textContent = originalBtnText;
+                    }
+                    return;
+                }
+                
+                // Android端末で複数ファイルの場合の特別な処理
+                if (isAndroid && totalFiles > 1) {
+                    // Android向けの複数ファイル共有処理
+                    try {
+                        // 複数ファイルを一度に共有するためのファイルリストを作成
+                        const fileArray = [];
+                        for (let i = 0; i < processedFiles.length; i++) {
+                            fileArray.push(processedFiles[i].compressed);
+                        }
+                        
+                        // Web Share APIで複数ファイルを一度に共有
+                        const shareData = {
+                            files: fileArray,
+                        };
+                        
+                        if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+                            downloadBtnText.textContent = `共有中...`;
+                            await navigator.share(shareData);
+                            console.log("複数ファイル共有成功");
+                        } else {
+                            // 一括共有に対応していない場合は1つずつ共有
+                            await shareFilesOneByOne();
+                        }
+                    } catch (error) {
+                        console.error("Android複数ファイル共有エラー:", error);
+                        alert("複数ファイルの一括共有に失敗しました。1つずつ共有します。");
+                        // エラーが発生した場合は1つずつ共有
+                        await shareFilesOneByOne();
+                    }
+                } else {
+                    // 単一ファイルまたはiOS以外のモバイルの場合は1つずつ共有
+                    await shareFilesOneByOne();
+                }
+                
+                downloadBtnText.textContent = originalBtnText;
+            } else {
+                // PCの場合はダウンロード
+                // 多数の画像をダウンロードする場合はZIPファイルを作成
+                if (totalFiles > 10) {
+                    downloadBtnText.textContent = 'ZIP作成中...';
+                    downloadBtn.disabled = true;
+                    
+                    try {
+                        // 動的にJSZipライブラリを読み込む
+                        if (typeof JSZip === 'undefined') {
+                            await new Promise((resolve, reject) => {
+                                const script = document.createElement('script');
+                                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                                script.onload = resolve;
+                                script.onerror = reject;
+                                document.head.appendChild(script);
+                            });
+                        }
+                        
+                        // ZIPファイルを作成
+                        const zip = new JSZip();
+                        
+                        // プログレスバーを表示
+                        const progress = document.getElementById('progress');
+                        const progressText = document.getElementById('progress-text');
+                        const progressBar = document.getElementById('progress-bar-inner');
+                        progress.classList.remove('hidden');
+                        
+                        // ファイルをZIPに追加
+                        for (let i = 0; i < processedFiles.length; i++) {
+                            const file = processedFiles[i];
+                            progressText.textContent = `ZIP作成中 (${i+1}/${totalFiles})`;
+                            progressBar.style.width = `${Math.round((i+1) / totalFiles * 100)}%`;
+                            
+                            // ファイルの内容を読み込む
+                            const arrayBuffer = await file.compressed.arrayBuffer();
+                            zip.file(`compressed_${file.compressed.name}`, arrayBuffer);
+                            
+                            // 処理を分散させるため少し待機
+                            await new Promise(resolve => setTimeout(resolve, 10));
+                        }
+                        
+                        // ZIPファイルを生成
+                        progressText.textContent = 'ZIPファイル生成中...';
+                        const zipBlob = await zip.generateAsync({ type: 'blob' }, (metadata) => {
+                            progressBar.style.width = `${metadata.percent}%`;
+                        });
+                        
+                        // ZIPファイルをダウンロード
+                        const zipFile = new File([zipBlob], 'compressed_images.zip', { type: 'application/zip' });
+                        downloadFile(zipFile);
+                        
+                        progressText.textContent = 'ダウンロード完了';
+                        setTimeout(() => {
+                            progress.classList.add('hidden');
+                        }, 1000);
+                    } catch (error) {
+                        console.error('ZIP作成エラー:', error);
+                        alert('ZIPファイルの作成に失敗しました。別の方法で保存してください。');
+                        
+                        // エラーが発生した場合は個別ダウンロードに切り替え
+                        for (let i = 0; i < processedFiles.length; i++) {
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                            downloadFile(processedFiles[i].compressed);
+                        }
+                    } finally {
+                        downloadBtnText.textContent = originalBtnText;
+                        downloadBtn.disabled = false;
+                    }
+                } else {
+                    // 少数の画像は個別にダウンロード
+                    for (let i = 0; i < processedFiles.length; i++) {
+                        downloadBtnText.textContent = `ダウンロード中 (${i+1}/${totalFiles})`;
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        downloadFile(processedFiles[i].compressed);
+                    }
+                    downloadBtnText.textContent = originalBtnText;
+                }
+            }
+        }
+        
+        // 1つずつファイルを共有する補助関数
+        async function shareFilesOneByOne() {
+            const totalFiles = processedFiles.length;
+            const downloadBtnText = document.getElementById('downloadBtnText');
+            let successCount = 0;
+            let failCount = 0;
+            
+            // モバイルの場合は1つずつ共有
+            for (let i = 0; i < processedFiles.length; i++) {
+                const file = processedFiles[i];
+                downloadBtnText.textContent = `共有中 (${i+1}/${totalFiles})`;
+                
+                try {
+                    const success = await shareFile(file.compressed);
+                    if (success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                        console.warn(`ファイル ${i+1}/${totalFiles} の共有に失敗しました`);
+                        // 失敗しても続行
+                    }
+                } catch (error) {
+                    console.error(`ファイル ${i+1}/${totalFiles} の共有中にエラー:`, error);
+                    failCount++;
+                    // エラーが発生しても続行
+                }
+                
+                // 処理間隔を空ける（デバイスに関わらず）
+                if (i < processedFiles.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+            }
+            
+            // 結果をログに記録
+            console.log(`共有結果: 成功=${successCount}, 失敗=${failCount}`);
+            
+            // 一部失敗した場合は通知
+            if (failCount > 0 && successCount > 0) {
+                alert(`${totalFiles}個中${successCount}個の画像を共有しました。\n${failCount}個の画像は共有できませんでした。`);
+            } else if (failCount > 0 && successCount === 0) {
+                alert('画像の共有に失敗しました。別の方法で保存してください。');
+            }
+        }
+
         // プレビューの更新処理
         function updatePreview() {
             const result = document.getElementById('result');
@@ -702,108 +1172,6 @@
             if (bytes < 1024) return bytes + ' B';
             if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
             return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-        }
-
-        // 全ての画像をダウンロード/共有
-        async function downloadAll() {
-            if (processedFiles.length === 0) {
-                alert('先に変換を行ってください。');
-                return;
-            }
-            
-            const totalFiles = processedFiles.length;
-            const downloadBtn = document.getElementById('downloadBtn');
-            const downloadBtnText = document.getElementById('downloadBtnText');
-            const originalBtnText = downloadBtnText.textContent;
-            
-            if (isMobile) {
-                // モバイルの場合は1つずつ共有
-                for (let i = 0; i < processedFiles.length; i++) {
-                    const file = processedFiles[i];
-                    downloadBtnText.textContent = `共有中 (${i+1}/${totalFiles})`;
-                    const success = await shareFile(file.compressed);
-                    if (!success) break;
-                }
-                downloadBtnText.textContent = originalBtnText;
-            } else {
-                // PCの場合はダウンロード
-                // 多数の画像をダウンロードする場合はZIPファイルを作成
-                if (totalFiles > 10) {
-                    downloadBtnText.textContent = 'ZIP作成中...';
-                    downloadBtn.disabled = true;
-                    
-                    try {
-                        // 動的にJSZipライブラリを読み込む
-                        if (typeof JSZip === 'undefined') {
-                            await new Promise((resolve, reject) => {
-                                const script = document.createElement('script');
-                                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-                                script.onload = resolve;
-                                script.onerror = reject;
-                                document.head.appendChild(script);
-                            });
-                        }
-                        
-                        // ZIPファイルを作成
-                        const zip = new JSZip();
-                        
-                        // プログレスバーを表示
-                        const progress = document.getElementById('progress');
-                        const progressText = document.getElementById('progress-text');
-                        const progressBar = document.getElementById('progress-bar-inner');
-                        progress.classList.remove('hidden');
-                        
-                        // ファイルをZIPに追加
-                        for (let i = 0; i < processedFiles.length; i++) {
-                            const file = processedFiles[i];
-                            progressText.textContent = `ZIP作成中 (${i+1}/${totalFiles})`;
-                            progressBar.style.width = `${Math.round((i+1) / totalFiles * 100)}%`;
-                            
-                            // ファイルの内容を読み込む
-                            const arrayBuffer = await file.compressed.arrayBuffer();
-                            zip.file(`compressed_${file.compressed.name}`, arrayBuffer);
-                            
-                            // 処理を分散させるため少し待機
-                            await new Promise(resolve => setTimeout(resolve, 10));
-                        }
-                        
-                        // ZIPファイルを生成
-                        progressText.textContent = 'ZIPファイル生成中...';
-                        const zipBlob = await zip.generateAsync({ type: 'blob' }, (metadata) => {
-                            progressBar.style.width = `${metadata.percent}%`;
-                        });
-                        
-                        // ZIPファイルをダウンロード
-                        const zipFile = new File([zipBlob], 'compressed_images.zip', { type: 'application/zip' });
-                        downloadFile(zipFile);
-                        
-                        progressText.textContent = 'ダウンロード完了';
-                        setTimeout(() => {
-                            progress.classList.add('hidden');
-                        }, 1000);
-                    } catch (error) {
-                        console.error('ZIP作成エラー:', error);
-                        alert('ZIPファイルの作成に失敗しました。別の方法で保存してください。');
-                        
-                        // エラーが発生した場合は個別ダウンロードに切り替え
-                        for (let i = 0; i < processedFiles.length; i++) {
-                            await new Promise(resolve => setTimeout(resolve, 100));
-                            downloadFile(processedFiles[i].compressed);
-                        }
-                    } finally {
-                        downloadBtnText.textContent = originalBtnText;
-                        downloadBtn.disabled = false;
-                    }
-                } else {
-                    // 少数の画像は個別にダウンロード
-                    for (let i = 0; i < processedFiles.length; i++) {
-                        downloadBtnText.textContent = `ダウンロード中 (${i+1}/${totalFiles})`;
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                        downloadFile(processedFiles[i].compressed);
-                    }
-                    downloadBtnText.textContent = originalBtnText;
-                }
-            }
         }
 
         // 結果をクリア
